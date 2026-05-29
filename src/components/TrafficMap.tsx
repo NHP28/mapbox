@@ -47,9 +47,13 @@ function getStyleIcon(id: string) {
   }
 }
 
-function getImageUrl(imageUrl: string | null): string | null {
-  if (imageUrl && (imageUrl.startsWith("http://") || imageUrl.startsWith("https://"))) {
+function getImageUrl(imageUrl: string | null, filename: string | null = null): string | null {
+  if (!imageUrl) return null;
+  if (imageUrl.startsWith("http://") || imageUrl.startsWith("https://")) {
     return imageUrl;
+  }
+  if (filename) {
+    return `/api/images/${filename}`;
   }
   return null;
 }
@@ -69,6 +73,29 @@ export default function TrafficMap() {
     () => signs.filter((sign) => sign.latitude !== null && sign.longitude !== null),
     [signs],
   );
+
+  const groupedSigns = useMemo(() => {
+    const groups: { [key: string]: typeof signs } = {};
+    validSigns.forEach((sign) => {
+      const key = `${sign.latitude!.toFixed(5)}_${sign.longitude!.toFixed(5)}`;
+      if (!groups[key]) {
+        groups[key] = [];
+      }
+      groups[key].push(sign);
+    });
+    return Object.values(groups);
+  }, [validSigns]);
+
+  const siblingSigns = useMemo(() => {
+    if (!selected) return [];
+    return signs.filter((sign) => {
+      if (sign.latitude === null || sign.longitude === null) return false;
+      return (
+        sign.latitude.toFixed(5) === selected.latitude?.toFixed(5) &&
+        sign.longitude.toFixed(5) === selected.longitude?.toFixed(5)
+      );
+    });
+  }, [selected, signs]);
 
   useEffect(() => {
     async function loadData() {
@@ -155,19 +182,60 @@ export default function TrafficMap() {
     markersRef.current.forEach((marker) => marker.remove());
     markersRef.current = [];
 
-    validSigns.forEach((sign) => {
+    groupedSigns.forEach((group) => {
+      const primarySign = group[0];
       const element = document.createElement("button");
-      element.className = "map-pin";
-      element.id = `traffic-sign-marker-${sign.id}`;
-      element.title = sign.fine_label ?? sign.coarse_label ?? "Traffic sign";
+      element.id = `traffic-sign-marker-${primarySign.id}`;
+      element.title = primarySign.fine_label ?? primarySign.coarse_label ?? "Traffic sign";
+      element.style.position = "relative"; // Đảm bảo định vị tuyệt đối cho badge
 
-      const marker = new mapboxgl.Marker({ element, anchor: "bottom" })
-        .setLngLat([sign.longitude!, sign.latitude!])
+      // Nếu có fine_label, hiển thị icon từ bộ sưu tập local, ngược lại dùng pin tròn mặc định
+      if (primarySign.fine_label) {
+        element.className = "map-pin-custom";
+        const iconUrl = `/package_signs/${primarySign.fine_label}.svg`;
+        element.style.backgroundImage = `url('${iconUrl}')`;
+        element.style.width = "34px";
+        element.style.height = "34px";
+        element.style.backgroundSize = "contain";
+        element.style.backgroundRepeat = "no-repeat";
+        element.style.backgroundPosition = "center";
+        element.style.border = "none";
+        element.style.backgroundColor = "transparent";
+        element.style.cursor = "pointer";
+      } else {
+        element.className = "map-pin";
+      }
+
+      // Thêm badge đếm số lượng nếu có từ 2 biển báo trở lên tại cùng một vị trí
+      if (group.length > 1) {
+        const badge = document.createElement("span");
+        badge.innerText = `x${group.length}`;
+        badge.style.position = "absolute";
+        badge.style.top = "-6px";
+        badge.style.right = "-6px";
+        badge.style.background = "linear-gradient(135deg, #ef4444, #f97316)";
+        badge.style.color = "white";
+        badge.style.fontSize = "10px";
+        badge.style.fontWeight = "bold";
+        badge.style.borderRadius = "10px";
+        badge.style.padding = "2px 6px";
+        badge.style.border = "1.5px solid white";
+        badge.style.boxShadow = "0 2px 4px rgba(0,0,0,0.2)";
+        badge.style.pointerEvents = "none";
+        badge.style.display = "flex";
+        badge.style.alignItems = "center";
+        badge.style.justifyContent = "center";
+        element.appendChild(badge);
+      }
+
+      const anchor = primarySign.fine_label ? "center" : "bottom";
+      const marker = new mapboxgl.Marker({ element, anchor })
+        .setLngLat([primarySign.longitude!, primarySign.latitude!])
         .addTo(map);
 
       element.addEventListener("click", () => {
-        setSelected(sign);
-        map.flyTo({ center: [sign.longitude!, sign.latitude!], zoom: 15, duration: 800 });
+        setSelected(primarySign);
+        map.flyTo({ center: [primarySign.longitude!, primarySign.latitude!], zoom: 15, duration: 800 });
       });
 
       markersRef.current.push(marker);
@@ -180,7 +248,7 @@ export default function TrafficMap() {
       validSigns.forEach((sign) => bounds.extend([sign.longitude!, sign.latitude!]));
       map.fitBounds(bounds, { padding: 50, maxZoom: 14, duration: 1000 });
     }
-  }, [validSigns]);
+  }, [groupedSigns, validSigns]);
 
   const selectSign = (sign: TrafficSign) => {
     setSelected(sign);
@@ -389,13 +457,41 @@ export default function TrafficMap() {
                     </button>
                   </div>
 
+                  {siblingSigns.length > 1 && (
+                    <div className="flex items-center justify-between bg-slate-50 border border-slate-200 rounded px-2 py-1.5 text-xs text-slate-600">
+                      <button
+                        onClick={() => {
+                          const currentIndex = siblingSigns.findIndex((s) => s.id === selected.id);
+                          const prevIndex = (currentIndex - 1 + siblingSigns.length) % siblingSigns.length;
+                          setSelected(siblingSigns[prevIndex]);
+                        }}
+                        className="hover:text-sky-600 font-bold px-2 py-0.5 transition active:scale-95"
+                      >
+                        ◀
+                      </button>
+                      <span className="font-semibold text-slate-800">
+                        Cột biển báo ({siblingSigns.findIndex((s) => s.id === selected.id) + 1}/{siblingSigns.length})
+                      </span>
+                      <button
+                        onClick={() => {
+                          const currentIndex = siblingSigns.findIndex((s) => s.id === selected.id);
+                          const nextIndex = (currentIndex + 1) % siblingSigns.length;
+                          setSelected(siblingSigns[nextIndex]);
+                        }}
+                        className="hover:text-sky-600 font-bold px-2 py-0.5 transition active:scale-95"
+                      >
+                        ▶
+                      </button>
+                    </div>
+                  )}
+
                   {/* Inline photo thumbnail with detailed trigger */}
                   <div className="relative w-full h-32 rounded-md overflow-hidden border border-slate-150 bg-slate-50 group flex items-center justify-center text-slate-400">
-                    {getImageUrl(selected.source_image_abfs) ? (
+                    {getImageUrl(selected.source_image_abfs, selected.source_image) ? (
                       <>
                         {/* eslint-disable-next-line @next/next/no-img-element */}
                         <img
-                          src={getImageUrl(selected.source_image_abfs)!}
+                          src={getImageUrl(selected.source_image_abfs, selected.source_image)!}
                           alt={selected.fine_label || "Traffic Sign"}
                           className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
                         />
@@ -469,11 +565,11 @@ export default function TrafficMap() {
             </div>
 
             <div className="relative aspect-video w-full rounded-lg overflow-hidden border border-slate-200 bg-slate-950 flex items-center justify-center">
-              {getImageUrl(selected.source_image_abfs) ? (
+              {getImageUrl(selected.source_image_abfs, selected.source_image) ? (
                 <>
                   {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img
-                    src={getImageUrl(selected.source_image_abfs)!}
+                    src={getImageUrl(selected.source_image_abfs, selected.source_image)!}
                     alt={selected.fine_label || "Source"}
                     className="max-h-full max-w-full object-contain"
                   />

@@ -28,8 +28,15 @@ export async function GET(
     const blobServiceClient = new BlobServiceClient(ONELAKE_URL, credential);
     const containerClient = blobServiceClient.getContainerClient(WORKSPACE_ID);
     
-    const targetPath = `${LAKEHOUSE_ID}/Files/bronze/images/${filename}`;
-    const blobClient = containerClient.getBlobClient(targetPath);
+    // Thử tìm ảnh trực tiếp ở Files/bronze/ trước, nếu không có thì tìm ở Files/bronze/images/
+    let targetPath = `${LAKEHOUSE_ID}/Files/bronze/${filename}`;
+    let blobClient = containerClient.getBlobClient(targetPath);
+    
+    const exists = await blobClient.exists();
+    if (!exists) {
+      targetPath = `${LAKEHOUSE_ID}/Files/bronze/images/${filename}`;
+      blobClient = containerClient.getBlobClient(targetPath);
+    }
     
     const downloadResponse = await blobClient.download();
     const blobBody = await downloadResponse.blobBody;

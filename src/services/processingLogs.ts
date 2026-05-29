@@ -1,4 +1,5 @@
-import { supabase } from "@/lib/supabase";
+import { sql } from "drizzle-orm";
+import { db } from "@/db";
 
 export type ProcessingLogItem = {
   id: number;
@@ -14,9 +15,8 @@ export type ProcessingLogItem = {
 };
 
 export async function getProcessingLogs(limit = 100) {
-  const { data, error } = await supabase
-    .from("processing_log")
-    .select(`
+  return db.execute<ProcessingLogItem>(sql`
+    SELECT
       id,
       image_queue_id,
       image_filename,
@@ -24,17 +24,11 @@ export async function getProcessingLogs(limit = 100) {
       status,
       error_message,
       detections_saved,
-      started_at,
-      finished_at,
+      started_at::text AS started_at,
+      finished_at::text AS finished_at,
       duration_seconds
-    `)
-    .order("started_at", { ascending: false, nullsFirst: false })
-    .order("id", { ascending: false })
-    .limit(limit);
-
-  if (error) {
-    throw new Error(error.message);
-  }
-
-  return data as unknown as ProcessingLogItem[];
+    FROM processing_log
+    ORDER BY started_at DESC NULLS LAST, id DESC
+    LIMIT ${limit}
+  `);
 }

@@ -1,4 +1,5 @@
-import { supabase } from "@/lib/supabase";
+import { sql } from "drizzle-orm";
+import { db } from "@/db";
 
 export type TrafficSign = {
   id: number;
@@ -14,9 +15,8 @@ export type TrafficSign = {
 };
 
 export async function getTrafficSigns(limit = 500) {
-  const { data, error } = await supabase
-    .from("traffic_sign")
-    .select(`
+  return db.execute<TrafficSign>(sql`
+    SELECT
       id,
       fine_label,
       coarse_label,
@@ -26,16 +26,11 @@ export async function getTrafficSigns(limit = 500) {
       longitude,
       source_image,
       source_image_abfs,
-      inferred_at
-    `)
-    .not("latitude", "is", null)
-    .not("longitude", "is", null)
-    .order("inferred_at", { ascending: false, nullsFirst: false })
-    .limit(limit);
-
-  if (error) {
-    throw new Error(error.message);
-  }
-
-  return data as TrafficSign[];
+      inferred_at::text AS inferred_at
+    FROM traffic_sign
+    WHERE latitude IS NOT NULL
+      AND longitude IS NOT NULL
+    ORDER BY inferred_at DESC NULLS LAST
+    LIMIT ${limit}
+  `);
 }
