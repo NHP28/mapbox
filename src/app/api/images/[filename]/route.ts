@@ -24,28 +24,27 @@ export async function GET(
 
   try {
     const credential = new ClientSecretCredential(TENANT_ID, CLIENT_ID, CLIENT_SECRET);
-    
     const blobServiceClient = new BlobServiceClient(ONELAKE_URL, credential);
     const containerClient = blobServiceClient.getContainerClient(WORKSPACE_ID);
     
-    // Thử tìm ảnh trực tiếp ở Files/bronze/ trước, nếu không có thì tìm ở Files/bronze/images/
     let targetPath = `${LAKEHOUSE_ID}/Files/bronze/${filename}`;
     let blobClient = containerClient.getBlobClient(targetPath);
-    
-    const exists = await blobClient.exists();
-    if (!exists) {
-      targetPath = `${LAKEHOUSE_ID}/Files/bronze/images/${filename}`;
-      blobClient = containerClient.getBlobClient(targetPath);
-    }
-    
-    const downloadResponse = await blobClient.download();
-    const blobBody = await downloadResponse.blobBody;
-    
-    if (!blobBody) {
-      return new NextResponse("Image not found", { status: 404 });
+    let buffer: Buffer;
+
+    try {
+      buffer = await blobClient.downloadToBuffer();
+    } catch (e1) {
+      const err = e1 as any;
+      if (err.statusCode === 404) {
+        targetPath = `${LAKEHOUSE_ID}/Files/bronze/images/${filename}`;
+        blobClient = containerClient.getBlobClient(targetPath);
+        buffer = await blobClient.downloadToBuffer();
+      } else {
+        throw e1;
+      }
     }
 
-    return new NextResponse(blobBody, {
+    return new NextResponse(new Uint8Array(buffer), {
       headers: {
         "Content-Type": "image/jpeg",
         "Cache-Control": "public, max-age=31536000, immutable",

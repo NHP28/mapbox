@@ -1,5 +1,4 @@
-import { sql } from "drizzle-orm";
-import { db } from "@/db";
+import { supabase } from "@/lib/supabase";
 
 export type ImageQueueItem = {
   id: number;
@@ -11,27 +10,42 @@ export type ImageQueueItem = {
 };
 
 export async function getImageQueue(limit = 100) {
-  return db.execute<ImageQueueItem>(sql`
-    SELECT
+  const { data, error } = await supabase
+    .from("image_queue")
+    .select(`
       id,
       filename,
       bronze_path,
       status,
-      uploaded_at::text AS created_at,
-      processed_at::text AS updated_at
-    FROM image_queue
-    ORDER BY id DESC
-    LIMIT ${limit}
-  `);
+      created_at:uploaded_at,
+      updated_at:processed_at
+    `)
+    .order("id", { ascending: false })
+    .limit(limit);
+
+  if (error) {
+    throw new Error(error.message);
+  }
+  return data as unknown as ImageQueueItem[];
 }
 
 export async function addImageToQueue(filename: string, bronzePath: string) {
-  return db.execute(sql`
-    INSERT INTO image_queue (filename, bronze_path, status, uploaded_at)
-    VALUES (${filename}, ${bronzePath}, 'pending', NOW())
-    ON CONFLICT (filename) DO UPDATE SET
-      status = 'pending',
-      uploaded_at = NOW()
-    RETURNING id
-  `);
+  const { data, error } = await supabase
+    .from("image_queue")
+    .upsert(
+      {
+        filename,
+        bronze_path: bronzePath,
+        status: "pending",
+        uploaded_at: new Date().toISOString()
+      },
+      { onConflict: "filename" }
+    )
+    .select("id")
+    .single();
+
+  if (error) {
+    throw new Error(error.message);
+  }
+  return [data];
 }

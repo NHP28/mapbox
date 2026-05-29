@@ -58,16 +58,118 @@ function getImageUrl(imageUrl: string | null, filename: string | null = null): s
   return null;
 }
 
+function getBoundingBoxStyle(sign: TrafficSign, naturalWidth: number, naturalHeight: number) {
+  const { bbox_x1, bbox_y1, bbox_x2, bbox_y2 } = sign;
+  if (
+    !naturalWidth ||
+    !naturalHeight ||
+    bbox_x1 === null ||
+    bbox_y1 === null ||
+    bbox_x2 === null ||
+    bbox_y2 === null
+  ) {
+    return null;
+  }
+
+  const x1 = Math.min(bbox_x1, bbox_x2);
+  const y1 = Math.min(bbox_y1, bbox_y2);
+  const x2 = Math.max(bbox_x1, bbox_x2);
+  const y2 = Math.max(bbox_y1, bbox_y2);
+
+  return {
+    left: `${(x1 / naturalWidth) * 100}%`,
+    top: `${(y1 / naturalHeight) * 100}%`,
+    width: `${((x2 - x1) / naturalWidth) * 100}%`,
+    height: `${((y2 - y1) / naturalHeight) * 100}%`,
+  };
+}
+
+function clampImagePan(
+  pan: { x: number; y: number },
+  zoom: number,
+  container: HTMLDivElement,
+  imageDisplaySize: { width: number; height: number },
+) {
+  const scaledWidth = imageDisplaySize.width * zoom;
+  const scaledHeight = imageDisplaySize.height * zoom;
+  const maxX = Math.max(0, (scaledWidth - container.clientWidth) / 2);
+  const maxY = Math.max(0, (scaledHeight - container.clientHeight) / 2);
+
+  return {
+    x: Math.min(maxX, Math.max(-maxX, pan.x)),
+    y: Math.min(maxY, Math.max(-maxY, pan.y)),
+  };
+}
+
+const USE_MOCK_SIGNS = true;
+
+const mockTrafficSigns: TrafficSign[] = [
+  {
+    id: 9001,
+    fine_label: "regulatory--maximum-speed-limit-60--g1",
+    coarse_label: "speed-limit",
+    confidence_yolo: 0.96,
+    cosine_similarity: 0.93,
+    bbox_x1: 100,
+    bbox_y1: 100,
+    bbox_x2: 220,
+    bbox_y2: 220,
+    latitude: 16.054407,
+    longitude: 108.202167,
+    source_image: null,
+    source_image_abfs: null,
+    inferred_at: new Date().toISOString(),
+  },
+  {
+    id: 9002,
+    fine_label: "warning--pedestrians-crossing--g1",
+    coarse_label: "warning",
+    confidence_yolo: 0.91,
+    cosine_similarity: 0.88,
+    bbox_x1: 130,
+    bbox_y1: 110,
+    bbox_x2: 250,
+    bbox_y2: 260,
+    latitude: 16.067789,
+    longitude: 108.220833,
+    source_image: null,
+    source_image_abfs: null,
+    inferred_at: new Date().toISOString(),
+  },
+  {
+    id: 9003,
+    fine_label: "regulatory--no-entry--g1",
+    coarse_label: "regulatory",
+    confidence_yolo: 0.94,
+    cosine_similarity: 0.9,
+    bbox_x1: 90,
+    bbox_y1: 90,
+    bbox_x2: 200,
+    bbox_y2: 205,
+    latitude: 16.047079,
+    longitude: 108.20623,
+    source_image: null,
+    source_image_abfs: null,
+    inferred_at: new Date().toISOString(),
+  },
+];
+
 export default function TrafficMap() {
   const mapContainer = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<mapboxgl.Map | null>(null);
   const markersRef = useRef<mapboxgl.Marker[]>([]);
+  const imagePanRef = useRef({ x: 0, y: 0, startX: 0, startY: 0, frame: 0 });
   const [signs, setSigns] = useState<TrafficSign[]>([]);
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<TrafficSign | null>(null);
   const [status, setStatus] = useState("Đang kết nối database...");
   const [currentStyle, setCurrentStyle] = useState("streets");
   const [showImageModal, setShowImageModal] = useState(false);
+  const [modalImageSize, setModalImageSize] = useState({ width: 0, height: 0 });
+  const [modalImageDisplaySize, setModalImageDisplaySize] = useState({ width: 0, height: 0 });
+  const [modalImageZoom, setModalImageZoom] = useState(1);
+  const [modalImagePan, setModalImagePan] = useState({ x: 0, y: 0 });
+  const [isImagePanning, setIsImagePanning] = useState(false);
 
   const validSigns = useMemo(
     () => signs.filter((sign) => sign.latitude !== null && sign.longitude !== null),
@@ -101,6 +203,12 @@ export default function TrafficMap() {
     async function loadData() {
       setLoading(true);
       try {
+        if (USE_MOCK_SIGNS) {
+          setSigns(mockTrafficSigns);
+          setStatus("Đang dùng mock data để test marker");
+          return;
+        }
+
         const data = await fetchTrafficSigns();
         setSigns(data);
         setStatus("Đồng bộ dữ liệu thành công");
@@ -188,6 +296,11 @@ export default function TrafficMap() {
       element.id = `traffic-sign-marker-${primarySign.id}`;
       element.title = primarySign.fine_label ?? primarySign.coarse_label ?? "Traffic sign";
       element.style.position = "relative"; // Đảm bảo định vị tuyệt đối cho badge
+      element.style.display = "block";
+      element.style.boxSizing = "border-box";
+      element.style.margin = "0";
+      element.style.padding = "0";
+      element.style.lineHeight = "0";
 
       // Nếu có fine_label, hiển thị icon từ bộ sưu tập local, ngược lại dùng pin tròn mặc định
       if (primarySign.fine_label) {
@@ -228,8 +341,10 @@ export default function TrafficMap() {
         element.appendChild(badge);
       }
 
-      const anchor = primarySign.fine_label ? "center" : "bottom";
-      const marker = new mapboxgl.Marker({ element, anchor })
+      const markerOptions = primarySign.fine_label
+        ? { element, anchor: "center" as const }
+        : { element, anchor: "bottom" as const };
+      const marker = new mapboxgl.Marker(markerOptions)
         .setLngLat([primarySign.longitude!, primarySign.latitude!])
         .addTo(map);
 
@@ -252,6 +367,11 @@ export default function TrafficMap() {
 
   const selectSign = (sign: TrafficSign) => {
     setSelected(sign);
+    setModalImageSize({ width: 0, height: 0 });
+    setModalImageDisplaySize({ width: 0, height: 0 });
+    setModalImageZoom(1);
+    setModalImagePan({ x: 0, y: 0 });
+    setIsImagePanning(false);
     if (mapRef.current && sign.longitude && sign.latitude) {
       mapRef.current.flyTo({ center: [sign.longitude, sign.latitude], zoom: 15, duration: 800 });
     }
@@ -282,6 +402,67 @@ export default function TrafficMap() {
         }
       });
     }
+  };
+
+  const startImagePan = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    const container = event.currentTarget;
+    container.setPointerCapture(event.pointerId);
+    imagePanRef.current = {
+      x: event.clientX,
+      y: event.clientY,
+      startX: modalImagePan.x,
+      startY: modalImagePan.y,
+      frame: imagePanRef.current.frame,
+    };
+    setIsImagePanning(true);
+  };
+
+  const moveImagePan = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (!isImagePanning) return;
+    event.preventDefault();
+    const nextPan = clampImagePan(
+      {
+        x: imagePanRef.current.startX + event.clientX - imagePanRef.current.x,
+        y: imagePanRef.current.startY + event.clientY - imagePanRef.current.y,
+      },
+      modalImageZoom,
+      event.currentTarget,
+      modalImageDisplaySize,
+    );
+
+    if (imagePanRef.current.frame) {
+      cancelAnimationFrame(imagePanRef.current.frame);
+    }
+
+    imagePanRef.current.frame = requestAnimationFrame(() => {
+      setModalImagePan(nextPan);
+    });
+  };
+
+  const stopImagePan = (event?: React.PointerEvent<HTMLDivElement>) => {
+    if (event && event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    if (imagePanRef.current.frame) {
+      cancelAnimationFrame(imagePanRef.current.frame);
+      imagePanRef.current.frame = 0;
+    }
+    setIsImagePanning(false);
+  };
+
+  const zoomImageWithWheel = (event: React.WheelEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const container = event.currentTarget;
+    const nextZoom = Math.min(
+      3,
+      Math.max(0.5, Number((modalImageZoom + (event.deltaY < 0 ? 0.12 : -0.12)).toFixed(2))),
+    );
+
+    setModalImageZoom(nextZoom);
+    setModalImagePan((pan) => clampImagePan(pan, nextZoom, container, modalImageDisplaySize));
   };
 
   return (
@@ -496,7 +677,14 @@ export default function TrafficMap() {
                           className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
                         />
                         <button
-                          onClick={() => setShowImageModal(true)}
+                          onClick={() => {
+                            setModalImageSize({ width: 0, height: 0 });
+                            setModalImageDisplaySize({ width: 0, height: 0 });
+                            setModalImageZoom(1);
+                            setModalImagePan({ x: 0, y: 0 });
+                            setIsImagePanning(false);
+                            setShowImageModal(true);
+                          }}
                           className="absolute bottom-2 right-2 bg-slate-900/85 hover:bg-slate-900 text-white rounded px-2.5 py-1.5 text-[10px] font-medium transition shadow-md flex items-center gap-1"
                         >
                           <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
@@ -548,7 +736,7 @@ export default function TrafficMap() {
       {/* FULL DETAILED IMAGE MODAL (YOLO Bounding Box overlay) */}
       {showImageModal && selected && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-sm">
-          <div className="relative max-w-3xl w-full rounded-xl bg-white p-6 shadow-2xl border border-slate-100 flex flex-col gap-4">
+          <div className="relative max-h-[92vh] max-w-3xl w-full overflow-y-auto rounded-xl bg-white p-6 shadow-2xl border border-slate-100 flex flex-col gap-4">
             <div className="flex items-center justify-between">
               <div>
                 <span className="text-[10px] font-semibold text-sky-600 uppercase tracking-widest">Chi tiết nhận diện</span>
@@ -556,28 +744,83 @@ export default function TrafficMap() {
                   {selected.fine_label || selected.coarse_label || "Biển báo phát hiện"}
                 </h3>
               </div>
-              <button
-                onClick={() => setShowImageModal(false)}
-                className="rounded-full hover:bg-slate-100 p-1.5 text-slate-400 hover:text-slate-600 transition"
-              >
-                ✕
-              </button>
+              <div className="flex items-center gap-2">
+                <div className="flex items-center gap-1 rounded-lg border border-slate-200 bg-slate-50 p-1">
+                  <button
+                    type="button"
+                    onClick={() => setModalImageZoom((zoom) => Math.max(0.5, Number((zoom - 0.25).toFixed(2))))}
+                    className="h-8 w-8 rounded-md bg-white text-sm font-bold text-slate-700 shadow-sm transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40"
+                    disabled={modalImageZoom <= 0.5}
+                    title="Thu nhỏ ảnh"
+                  >
+                    −
+                  </button>
+                  <span className="min-w-12 text-center text-xs font-semibold text-slate-600">
+                    {Math.round(modalImageZoom * 100)}%
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setModalImageZoom((zoom) => Math.min(3, Number((zoom + 0.25).toFixed(2))))}
+                    className="h-8 w-8 rounded-md bg-white text-sm font-bold text-slate-700 shadow-sm transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40"
+                    disabled={modalImageZoom >= 3}
+                    title="Phóng to ảnh"
+                  >
+                    +
+                  </button>
+                </div>
+                <button
+                  onClick={() => setShowImageModal(false)}
+                  className="rounded-full hover:bg-slate-100 p-1.5 text-slate-400 hover:text-slate-600 transition"
+                >
+                  ✕
+                </button>
+              </div>
             </div>
 
-            <div className="relative aspect-video w-full rounded-lg overflow-hidden border border-slate-200 bg-slate-950 flex items-center justify-center">
+            <div
+              className={`relative w-full select-none rounded-lg overflow-hidden border border-slate-200 bg-slate-950 p-2 max-h-[58vh] touch-none ${isImagePanning ? "cursor-grabbing" : "cursor-grab"}`}
+              onPointerDown={startImagePan}
+              onPointerMove={moveImagePan}
+              onPointerUp={stopImagePan}
+              onPointerCancel={stopImagePan}
+              onPointerLeave={stopImagePan}
+              onWheelCapture={zoomImageWithWheel}
+            >
               {getImageUrl(selected.source_image_abfs, selected.source_image) ? (
-                <>
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img
-                    src={getImageUrl(selected.source_image_abfs, selected.source_image)!}
-                    alt={selected.fine_label || "Source"}
-                    className="max-h-full max-w-full object-contain"
-                  />
-                  {/* Bounding Box overlay */}
-                  <div className="absolute border-2 border-red-500 bg-red-500/10 text-red-500 text-[10px] font-bold px-1.5 py-0.5 rounded shadow-lg animate-pulse" style={{ top: "35%", left: "42%", width: "16%", height: "28%" }}>
-                    {selected.coarse_label || "Sign"} ({formatPercent(selected.confidence_yolo)})
+                <div className="flex min-h-full min-w-full items-center justify-center">
+                  <div
+                    className="relative inline-block origin-center will-change-transform"
+                    style={{ transform: `translate3d(${modalImagePan.x}px, ${modalImagePan.y}px, 0) scale(${modalImageZoom})` }}
+                  >
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={getImageUrl(selected.source_image_abfs, selected.source_image)!}
+                      alt={selected.fine_label || "Source"}
+                      className="block h-auto max-h-[55vh] max-w-full object-contain pointer-events-none"
+                      draggable={false}
+                      onLoad={(event) => {
+                        setModalImageSize({
+                          width: event.currentTarget.naturalWidth,
+                          height: event.currentTarget.naturalHeight,
+                        });
+                        setModalImageDisplaySize({
+                          width: event.currentTarget.offsetWidth,
+                          height: event.currentTarget.offsetHeight,
+                        });
+                      }}
+                    />
+                    {getBoundingBoxStyle(selected, modalImageSize.width, modalImageSize.height) && (
+                      <div
+                        className="absolute border border-red-500 pointer-events-none"
+                        style={getBoundingBoxStyle(selected, modalImageSize.width, modalImageSize.height)!}
+                      >
+                        <span className="absolute left-0 top-full mt-0.5 whitespace-nowrap bg-red-500 px-1 py-0.5 text-[10px] font-bold leading-none text-white">
+                          {selected.coarse_label || selected.fine_label || "Sign"} ({formatPercent(selected.confidence_yolo)})
+                        </span>
+                      </div>
+                    )}
                   </div>
-                </>
+                </div>
               ) : (
                 <div className="flex flex-col items-center gap-2 text-slate-500">
                   <svg className="h-8 w-8 text-slate-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
