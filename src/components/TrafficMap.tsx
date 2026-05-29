@@ -101,64 +101,14 @@ function clampImagePan(
   };
 }
 
-const USE_MOCK_SIGNS = true;
 
-const mockTrafficSigns: TrafficSign[] = [
-  {
-    id: 9001,
-    fine_label: "regulatory--maximum-speed-limit-60--g1",
-    coarse_label: "speed-limit",
-    confidence_yolo: 0.96,
-    cosine_similarity: 0.93,
-    bbox_x1: 100,
-    bbox_y1: 100,
-    bbox_x2: 220,
-    bbox_y2: 220,
-    latitude: 16.054407,
-    longitude: 108.202167,
-    source_image: null,
-    source_image_abfs: null,
-    inferred_at: new Date().toISOString(),
-  },
-  {
-    id: 9002,
-    fine_label: "warning--pedestrians-crossing--g1",
-    coarse_label: "warning",
-    confidence_yolo: 0.91,
-    cosine_similarity: 0.88,
-    bbox_x1: 130,
-    bbox_y1: 110,
-    bbox_x2: 250,
-    bbox_y2: 260,
-    latitude: 16.067789,
-    longitude: 108.220833,
-    source_image: null,
-    source_image_abfs: null,
-    inferred_at: new Date().toISOString(),
-  },
-  {
-    id: 9003,
-    fine_label: "regulatory--no-entry--g1",
-    coarse_label: "regulatory",
-    confidence_yolo: 0.94,
-    cosine_similarity: 0.9,
-    bbox_x1: 90,
-    bbox_y1: 90,
-    bbox_x2: 200,
-    bbox_y2: 205,
-    latitude: 16.047079,
-    longitude: 108.20623,
-    source_image: null,
-    source_image_abfs: null,
-    inferred_at: new Date().toISOString(),
-  },
-];
 
 export default function TrafficMap() {
   const mapContainer = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<mapboxgl.Map | null>(null);
   const markersRef = useRef<mapboxgl.Marker[]>([]);
   const imagePanRef = useRef({ x: 0, y: 0, startX: 0, startY: 0, frame: 0 });
+  const hasFitBoundsRef = useRef(false); // fitBounds chỉ chạy 1 lần khi data load lần đầu
   const [signs, setSigns] = useState<TrafficSign[]>([]);
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<TrafficSign | null>(null);
@@ -172,7 +122,13 @@ export default function TrafficMap() {
   const [isImagePanning, setIsImagePanning] = useState(false);
 
   const validSigns = useMemo(
-    () => signs.filter((sign) => sign.latitude !== null && sign.longitude !== null),
+    () => signs.filter(
+      (sign) =>
+        sign.latitude !== null &&
+        sign.longitude !== null &&
+        sign.fine_label != null &&
+        sign.fine_label.trim() !== "",
+    ),
     [signs],
   );
 
@@ -203,12 +159,6 @@ export default function TrafficMap() {
     async function loadData() {
       setLoading(true);
       try {
-        if (USE_MOCK_SIGNS) {
-          setSigns(mockTrafficSigns);
-          setStatus("Đang dùng mock data để test marker");
-          return;
-        }
-
         const data = await fetchTrafficSigns();
         setSigns(data);
         setStatus("Đồng bộ dữ liệu thành công");
@@ -287,83 +237,88 @@ export default function TrafficMap() {
     const map = mapRef.current;
     if (!map) return;
 
-    markersRef.current.forEach((marker) => marker.remove());
+    // Chỉ render markers cho signs có fine_label hợp lệ và có toạ độ.
+    // Filter thực hiện ngay tại đây để effect KHÔNG phụ thuộc vào validSigns/groupedSigns
+    // (những useMemo đó trả về array reference mới mỗi lần render dù data không đổi,
+    //  khiến effect chạy lại sau mỗi setSelected → reset zoom + redraw marker).
+    const filtered = signs.filter(
+      (s) =>
+        s.latitude !== null &&
+        s.longitude !== null &&
+        s.fine_label != null &&
+        s.fine_label.trim() !== "" &&
+        s.coarse_label !== "other-sign",
+    );
+
+    // Gom nhóm theo toạ độ (5 chữ số thập phân)
+    const groupMap: Record<string, typeof signs> = {};
+    filtered.forEach((sign) => {
+      const key = `${sign.latitude!.toFixed(5)}_${sign.longitude!.toFixed(5)}`;
+      if (!groupMap[key]) groupMap[key] = [];
+      groupMap[key].push(sign);
+    });
+    const groups = Object.values(groupMap);
+
+    // Xoá markers cũ
+    markersRef.current.forEach((m) => m.remove());
     markersRef.current = [];
 
-    groupedSigns.forEach((group) => {
+    const ICON_SIZE = 34;
+
+    groups.forEach((group) => {
       const primarySign = group[0];
-      const element = document.createElement("button");
+
+      const element = document.createElement("div");
       element.id = `traffic-sign-marker-${primarySign.id}`;
-      element.title = primarySign.fine_label ?? primarySign.coarse_label ?? "Traffic sign";
-      element.style.position = "relative"; // Đảm bảo định vị tuyệt đối cho badge
-      element.style.display = "block";
-      element.style.boxSizing = "border-box";
-      element.style.margin = "0";
-      element.style.padding = "0";
-      element.style.lineHeight = "0";
+      element.style.cssText = `width:${ICON_SIZE}px;height:${ICON_SIZE}px;margin:0;padding:0;box-sizing:border-box;cursor:pointer;overflow:visible;`;
+      element.className = "map-pin-custom";
 
-      // Nếu có fine_label, hiển thị icon từ bộ sưu tập local, ngược lại dùng pin tròn mặc định
-      if (primarySign.fine_label) {
-        element.className = "map-pin-custom";
-        const iconUrl = `/package_signs/${primarySign.fine_label}.svg`;
-        element.style.backgroundImage = `url('${iconUrl}')`;
-        element.style.width = "34px";
-        element.style.height = "34px";
-        element.style.backgroundSize = "contain";
-        element.style.backgroundRepeat = "no-repeat";
-        element.style.backgroundPosition = "center";
-        element.style.border = "none";
-        element.style.backgroundColor = "transparent";
-        element.style.cursor = "pointer";
-      } else {
-        element.className = "map-pin";
-      }
+      const img = document.createElement("img");
+      img.src = `/package_signs/${primarySign.fine_label}.svg`;
+      img.alt = primarySign.fine_label!;
+      img.setAttribute("width", String(ICON_SIZE));
+      img.setAttribute("height", String(ICON_SIZE));
+      img.style.cssText = `width:${ICON_SIZE}px;height:${ICON_SIZE}px;display:block;object-fit:contain;pointer-events:none;`;
+      element.appendChild(img);
 
-      // Thêm badge đếm số lượng nếu có từ 2 biển báo trở lên tại cùng một vị trí
       if (group.length > 1) {
         const badge = document.createElement("span");
         badge.innerText = `x${group.length}`;
-        badge.style.position = "absolute";
-        badge.style.top = "-6px";
-        badge.style.right = "-6px";
-        badge.style.background = "linear-gradient(135deg, #ef4444, #f97316)";
-        badge.style.color = "white";
-        badge.style.fontSize = "10px";
-        badge.style.fontWeight = "bold";
-        badge.style.borderRadius = "10px";
-        badge.style.padding = "2px 6px";
-        badge.style.border = "1.5px solid white";
-        badge.style.boxShadow = "0 2px 4px rgba(0,0,0,0.2)";
-        badge.style.pointerEvents = "none";
-        badge.style.display = "flex";
-        badge.style.alignItems = "center";
-        badge.style.justifyContent = "center";
-        element.appendChild(badge);
+        badge.style.cssText = "position:absolute;top:-6px;right:-6px;background:linear-gradient(135deg,#ef4444,#f97316);color:white;font-size:10px;font-weight:bold;border-radius:10px;padding:2px 6px;border:1.5px solid white;box-shadow:0 2px 4px rgba(0,0,0,0.2);pointer-events:none;display:flex;align-items:center;justify-content:center;z-index:1;";
+        const badgeWrapper = document.createElement("div");
+        badgeWrapper.style.cssText = `position:absolute;top:0;left:0;width:${ICON_SIZE}px;height:${ICON_SIZE}px;pointer-events:none;`;
+        badgeWrapper.appendChild(badge);
+        element.appendChild(badgeWrapper);
       }
 
-      const markerOptions = primarySign.fine_label
-        ? { element, anchor: "center" as const }
-        : { element, anchor: "bottom" as const };
-      const marker = new mapboxgl.Marker(markerOptions)
+      const marker = new mapboxgl.Marker({ element, anchor: "center" })
         .setLngLat([primarySign.longitude!, primarySign.latitude!])
         .addTo(map);
 
       element.addEventListener("click", () => {
         setSelected(primarySign);
-        map.flyTo({ center: [primarySign.longitude!, primarySign.latitude!], zoom: 15, duration: 800 });
+        // Giữ zoom hiện tại nếu đã zoom sâu hơn 15, không ép về 15
+        const currentZoom = map.getZoom();
+        map.flyTo({
+          center: [primarySign.longitude!, primarySign.latitude!],
+          zoom: Math.max(currentZoom, 15),
+          duration: 800,
+        });
       });
 
       markersRef.current.push(marker);
     });
 
-    if (validSigns.length > 0) {
-      // Đảm bảo bản đồ nhận diện đúng kích thước thực tế trước khi căn chỉnh toạ độ
+    // fitBounds chỉ một lần khi data load lần đầu
+    if (filtered.length > 0 && !hasFitBoundsRef.current) {
+      hasFitBoundsRef.current = true;
       map.resize();
       const bounds = new mapboxgl.LngLatBounds();
-      validSigns.forEach((sign) => bounds.extend([sign.longitude!, sign.latitude!]));
+      filtered.forEach((s) => bounds.extend([s.longitude!, s.latitude!]));
       map.fitBounds(bounds, { padding: 50, maxZoom: 14, duration: 1000 });
     }
-  }, [groupedSigns, validSigns]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [signs]); // ← ONLY signs: effect chỉ chạy lại khi dữ liệu thực sự thay đổi
 
   const selectSign = (sign: TrafficSign) => {
     setSelected(sign);

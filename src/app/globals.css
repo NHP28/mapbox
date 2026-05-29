@@ -59,15 +59,16 @@ body {
 
 /* Custom Mapbox sign icon marker */
 .map-pin-custom {
+  /* Kích thước tĩnh — KHÔNG thêm margin/padding/border ở đây vì sẽ làm
+     bounding box khác với những gì Mapbox dùng để tính anchor offset */
   width: 34px;
   height: 34px;
   cursor: pointer;
   filter: drop-shadow(0px 3px 6px rgba(0, 0, 0, 0.25));
   border: none;
-  background-color: transparent;
-  background-size: contain;
-  background-repeat: no-repeat;
-  background-position: center;
+  background: transparent;
+  /* overflow:visible để badge có thể nhô ra ngoài mà không mở rộng bounding box */
+  overflow: visible;
 }
 
 .map-pin-custom:hover {
